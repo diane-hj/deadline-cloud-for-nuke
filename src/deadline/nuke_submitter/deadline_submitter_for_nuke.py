@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from pathlib import Path
 from typing import Any, Optional
 import yaml  # type: ignore[import]
@@ -78,7 +79,54 @@ def _set_timeouts(template: dict[str, Any], settings: RenderSubmitterUISettings)
         _handle_step(step)
 
 
-def _get_job_template(settings: RenderSubmitterUISettings) -> dict[str, Any]:
+def _add_gizmos_to_job_bundle(job_bundle_path: Path, nodes: list[nuke.Node]) -> Optional[Path]:
+    gizmo_paths = [Path(node.filename()) for node in nodes if isinstance(node, nuke.Gizmo)]
+    if not gizmo_paths:
+        return None
+    gizmo_dir = job_bundle_path / "gizmos"
+    gizmo_dir.mkdir(parents=True, exist_ok=True)
+    for gizmo_path in gizmo_paths:
+        shutil.copy(gizmo_path, gizmo_dir / gizmo_path.name)
+    return gizmo_dir
+
+
+def _remove_gizmo_dir_from_job_template(job_template: dict[str, Any]) -> None:
+    for index, param in enumerate(job_template["parameterDefinitions"]):
+        if param["name"] == "GizmoDir":
+            job_template["parameterDefinitions"].pop(index)
+            break
+
+
+def _add_gizmo_dir_to_job_template(job_template: dict[str, Any]) -> None:
+    if "jobEnvironments" not in job_template:
+        job_template["jobEnvironments"] = []
+
+    # This needs to be prepended rather than appended
+    # as it must run before the "Nuke" environment.
+    job_template["jobEnvironments"].insert(
+        0,
+        {
+            "name": "Add Gizmos to NUKE_PATH",
+            "script": {
+                "actions": {"onEnter": {"command": "{{Env.File.Enter}}"}},
+                "embeddedFiles": [
+                    {
+                        "name": "Enter",
+                        "type": "TEXT",
+                        "runnable": True,
+                        "data": """#!/bin/bash
+    echo 'openjd_env: NUKE_PATH=$NUKE_PATH:{{Param.GizmoDir}}'
+    """,
+                    }
+                ],
+            },
+        },
+    )
+
+
+def _get_job_template(
+    settings: RenderSubmitterUISettings, relative_gizmo_dir: Optional[Path]
+) -> dict[str, Any]:
     # Load the default Nuke job template, and then fill in scene-specific
     # values it needs.
     with open(Path(__file__).parent / "default_nuke_job_template.yaml") as f:
@@ -91,6 +139,13 @@ def _get_job_template(settings: RenderSubmitterUISettings) -> dict[str, Any]:
 
     # Set the timeouts for each action:
     _set_timeouts(job_template, settings)
+
+    # Add Gizmo directory to NUKE_PATH if we copied
+    # any gizmos to the job bundle.
+    if settings.include_gizmos_in_job_bundle:
+        _add_gizmo_dir_to_job_template(job_template)
+    else:
+        _remove_gizmo_dir_from_job_template(job_template)
 
     # Get a map of the parameter definitions for easier lookup
     parameter_def_map = {param["name"]: param for param in job_template["parameterDefinitions"]}
@@ -173,6 +228,7 @@ def _get_job_template(settings: RenderSubmitterUISettings) -> dict[str, Any]:
 def _get_parameter_values(
     settings: RenderSubmitterUISettings,
     queue_parameters: list[dict[str, Any]],
+    relative_gizmo_dir: Optional[Path],
 ) -> list[dict[str, Any]]:
     parameter_values: list[dict[str, Any]] = []
 
@@ -182,6 +238,10 @@ def _get_parameter_values(
     parameter_values.append(
         {"name": "Frames", "value": _get_frame_list(settings, write_node, write_node_name)}
     )
+
+    # Set the Nuke Gizmos
+    if settings.include_gizmos_in_job_bundle and relative_gizmo_dir:
+        parameter_values.append({"name": "GizmoDir", "value": relative_gizmo_dir})
 
     # Set the Nuke script file value
     parameter_values.append({"name": "NukeScriptFile", "value": get_nuke_script_file()})
@@ -330,7 +390,13 @@ def show_nuke_render_submitter(parent, f=Qt.WindowFlags()) -> "SubmitJobToDeadli
                 raise DeadlineOperationError(message)
 
         job_bundle_path = Path(job_bundle_dir)
-        job_template = _get_job_template(settings)
+        gizmo_dir = (
+            _add_gizmos_to_job_bundle(job_bundle_path, list(nuke.allNodes(recurseGroups=True)))
+            if settings.include_gizmos_in_job_bundle
+            else None
+        )
+        relative_gizmo_dir = gizmo_dir.relative_to(job_bundle_path) if gizmo_dir else None
+        job_template = _get_job_template(settings, relative_gizmo_dir)
 
         # If "HostRequirements" is provided, inject it into each of the "Step"
         if host_requirements:
@@ -338,7 +404,7 @@ def show_nuke_render_submitter(parent, f=Qt.WindowFlags()) -> "SubmitJobToDeadli
             for step in job_template["steps"]:
                 step["hostRequirements"] = host_requirements
 
-        parameter_values = _get_parameter_values(settings, queue_parameters)
+        parameter_values = _get_parameter_values(settings, queue_parameters, relative_gizmo_dir)
 
         with open(job_bundle_path / "template.yaml", "w", encoding="utf8") as f:
             deadline_yaml_dump(job_template, f, indent=1)
