@@ -5,8 +5,9 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 import yaml  # type: ignore[import]
+import copy
 
 import nuke
 from deadline.client.api import get_deadline_cloud_library_telemetry_client
@@ -164,10 +165,16 @@ def _get_job_template(settings: RenderSubmitterUISettings) -> dict[str, Any]:
     # Get a map of the parameter definitions for easier lookup
     parameter_def_map = {param["name"]: param for param in job_template["parameterDefinitions"]}
 
-    # Set the WriteNode parameter allowed values
-    parameter_def_map["WriteNode"]["allowedValues"].extend(
-        sorted(node.fullName() for node in find_all_write_nodes())
-    )
+    # Set the WriteNode parameter allowed values if it's for single step option
+    if settings.write_node_selection:
+        parameter_def_map["WriteNode"]["allowedValues"].extend(
+            sorted(node.fullName() for node in find_all_write_nodes())
+        )
+    else:
+        step_templates, parameter_definitions = _handle_multiple_steps_definition(job_template, settings)
+        # parameter_def_map.pop("WriteNode")
+        job_template["parameterDefinitions"] = parameter_definitions
+        job_template["steps"] = step_templates
 
     # Set the View parameter allowed values
     parameter_def_map["View"]["allowedValues"] = ["All Views"] + sorted(nuke.views())
@@ -261,9 +268,12 @@ def _get_parameter_values(
     # Set the Nuke script file value
     parameter_values.append({"name": "NukeScriptFile", "value": get_nuke_script_file()})
 
-    # Set the WriteNode parameter value
-    if write_node_name:
-        parameter_values.append({"name": "WriteNode", "value": write_node_name})
+    # # Set the WriteNode parameter value
+    # if write_node_name:
+    #     parameter_values.append({"name": "WriteNode", "value": write_node_name})
+
+    for step in settings.multiple_steps_selection_list:
+        parameter_values.append({"name": f"Step{step.write_node}", "value": step.write_node})
 
     # Set the View parameter value
     if settings.view_selection:
@@ -344,6 +354,47 @@ def _get_frame_list(
             last_frame = int(write_node.knob("last").value())
             frame_list = f"{first_frame}-{last_frame}"
     return frame_list
+
+
+def _handle_multiple_steps_definition(
+    job_template: dict,
+    settings: RenderSubmitterUISettings,
+) -> Tuple[dict, list]:
+    parameter_definitions = job_template["parameterDefinitions"]
+    step_templates = []
+
+    for step in settings.multiple_steps_selection_list:
+        step_write_node = f"Step{step.write_node}"
+        write_node_parameter_def = {
+            "name": step_write_node,
+            "type": "STRING",
+            "userInterface": {"control": "DROPDOWN_LIST", "label": "Write Node"},
+            "allowedValues": sorted(node.fullName() for node in find_all_write_nodes()),
+        }
+        parameter_definitions.append(write_node_parameter_def)
+        step_template = copy.deepcopy(job_template["steps"][0])
+        step_template["name"] = step.step_name
+        if step.depends_on:
+            step_template["dependencies"] = [{"dependsOn": step.depends_on}]
+        step_template["parameterSpace"]["taskParameterDefinitions"] = [
+            {
+                "name": "StepWriteNode",
+                "type": "STRING",
+                "range": [f'{{Param.{step_write_node}}}']
+            },
+            {
+                "name": "Frame",
+                "type": "INT",
+                "range": step.frame_range
+            }
+        ]
+        step_template["parameterSpace"]["combination"] = "StepWriteNode * Frame"
+        init_data = step_template["stepEnvironments"][0]["script"]["embeddedFiles"][0]["data"]
+        init_data += "write_nodes:\n- '{{Param." + step_write_node + "}}'"
+        step_template["stepEnvironments"][0]["script"]["embeddedFiles"][0]["data"] = init_data
+        step_templates.append(step_template)
+
+    return step_templates, parameter_definitions
 
 
 def show_nuke_render_submitter(parent, f=Qt.WindowFlags()) -> "SubmitJobToDeadlineDialog":

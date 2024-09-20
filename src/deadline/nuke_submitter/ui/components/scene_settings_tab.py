@@ -11,17 +11,27 @@ from PySide2.QtWidgets import (  # type: ignore
     QComboBox,
     QGridLayout,
     QGroupBox,
+    QRadioButton,
     QLabel,
     QLineEdit,
+    QListWidget,
     QMessageBox,
     QSizePolicy,
     QSpacerItem,
     QWidget,
     QSpinBox,
+    QPushButton,
+    QHBoxLayout,
+    QVBoxLayout,
 )
+from typing import Optional
 
 from ...assets import find_all_write_nodes
-from ...data_classes import RenderSubmitterUISettings
+from ...data_classes import RenderSubmitterUISettings, StepSetting
+
+STEP_NAME = "step_name"
+FRAME = "frame"
+WRITE_NODE = "write_node"
 
 
 class SceneSettingsWidget(QWidget):
@@ -42,24 +52,71 @@ class SceneSettingsWidget(QWidget):
     def _build_ui(self):
         lyt = QGridLayout(self)
 
-        self.write_node_box = QComboBox(self)
-        self._rebuild_write_node_drop_down()
         lyt.addWidget(QLabel("Write Nodes"), 0, 0)
-        lyt.addWidget(self.write_node_box, 0, 1, 1, -1)
+        self.submit_single_step_button = QRadioButton("Submit Single Step")
+        self.write_node_box = QComboBox(self)
+        self._rebuild_write_node_drop_down(self.write_node_box, include_all_write_nodes=True)
+        lyt.addWidget(self.submit_single_step_button, 1, 0)
+        lyt.addWidget(self.write_node_box, 1, 1, 1, -1)
+
+        def add_step_input_row(first: Optional[bool] = False):
+            box_layout = QHBoxLayout()
+            step_name_box = QLineEdit(self)
+            step_name_box.setObjectName(STEP_NAME)
+            step_name_box.setPlaceholderText("Step Name")
+            box_layout.addWidget(step_name_box)
+
+            write_node_box = QComboBox(self)
+            write_node_box.setObjectName(WRITE_NODE)
+            self._rebuild_write_node_drop_down(write_node_box, include_all_write_nodes=False)
+            box_layout.addWidget(write_node_box)
+
+            frame_box = QLineEdit(self)
+            frame_box.setObjectName(FRAME)
+            frame_box.setPlaceholderText("Frame")
+            box_layout.addWidget(frame_box)
+            
+            def remove_step_row():
+                frame_box.deleteLater()
+                write_node_box.deleteLater()
+                step_name_box.deleteLater()
+                remove_step_button.deleteLater()
+                box_layout.deleteLater()
+            if first:
+                add_more_steps_button = QPushButton("+")
+                add_more_steps_button.setFixedSize(15, 15)
+                box_layout.addWidget(add_more_steps_button)
+                add_more_steps_button.clicked.connect(add_step_input_row)
+            else:
+                remove_step_button = QPushButton("-")
+                remove_step_button.setFixedSize(15, 15)
+                remove_step_button.clicked.connect(remove_step_row)
+                box_layout.addWidget(remove_step_button)
+
+            self.multiple_steps_group_box.addLayout(box_layout)
+
+        self.submit_multiple_steps_button = QRadioButton("Submit Multiple Steps")
+        lyt.addWidget(self.submit_multiple_steps_button, 2, 0)
+        self.multiple_steps_group_box = QVBoxLayout()
+        lyt.addLayout(self.multiple_steps_group_box, 2, 1)
+        add_step_input_row(first=True)
+
+        self.submit_single_step_button.clicked.connect(self.control_multiple_steps_button)
+        self.submit_multiple_steps_button.clicked.connect(self.control_simple_step_button)
 
         self.views_box = QComboBox(self)
         self._rebuild_views_drop_down()
-        lyt.addWidget(QLabel("Views"), 1, 0)
-        lyt.addWidget(self.views_box, 1, 1, 1, -1)
+        lyt.addWidget(QLabel("Views"), 3, 0)
+        lyt.addWidget(self.views_box, 3, 1, 1, -1)
 
         self.frame_override_chck = QCheckBox("Override Frame Range", self)
         self.frame_override_txt = QLineEdit(self)
-        lyt.addWidget(self.frame_override_chck, 2, 0)
-        lyt.addWidget(self.frame_override_txt, 2, 1, 1, -1)
+        lyt.addWidget(self.frame_override_chck, 4, 0)
+        lyt.addWidget(self.frame_override_txt, 4, 1, 1, -1)
         self.frame_override_chck.stateChanged.connect(self.activate_frame_override_changed)
 
         self.proxy_mode_check = QCheckBox("Use Proxy Mode", self)
-        lyt.addWidget(self.proxy_mode_check, 3, 0)
+        lyt.addWidget(self.proxy_mode_check, 5, 0)
 
         self.timeout_checkbox = QCheckBox("Use Timeouts", self)
         self.timeout_checkbox.setChecked(True)
@@ -67,10 +124,10 @@ class SceneSettingsWidget(QWidget):
         self.timeout_checkbox.setToolTip(
             "Set a maximum duration for actions from this job. See AWS Deadline Cloud documentation to learn more"
         )
-        lyt.addWidget(self.timeout_checkbox, 4, 0)
+        lyt.addWidget(self.timeout_checkbox, 6, 0)
         self.timeouts_subtext = QLabel("Set a maximum duration for actions from this job")
         self.timeouts_subtext.setStyleSheet("font-style: italic")
-        lyt.addWidget(self.timeouts_subtext, 4, 1, 1, -1)
+        lyt.addWidget(self.timeouts_subtext, 6, 1, 1, -1)
 
         self.timeouts_box = QGroupBox()
         timeouts_lyt = QGridLayout(self.timeouts_box)
@@ -130,7 +187,7 @@ class SceneSettingsWidget(QWidget):
             self.include_adaptor_wheels = QCheckBox(
                 "Developer Option: Include Adaptor Wheels", self
             )
-            lyt.addWidget(self.include_adaptor_wheels, 7, 0, 1, 2)
+            lyt.addWidget(self.include_adaptor_wheels, 8, 0, 1, 2)
 
         lyt.addItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding), 7, 0)
 
@@ -176,14 +233,15 @@ class SceneSettingsWidget(QWidget):
             + timeout_boxes[3].value() * 60
         )
 
-    def _rebuild_write_node_drop_down(self) -> None:
-        self.write_node_box.clear()
-        self.write_node_box.addItem("All Write Nodes", None)
+    def _rebuild_write_node_drop_down(self, combo_box, include_all_write_nodes) -> None:
+        combo_box.clear()
+        if include_all_write_nodes:
+            combo_box.addItem("All Write Nodes", None)
         for write_node in sorted(
             find_all_write_nodes(), key=lambda write_node: write_node.fullName()
         ):
             # Set data value as fullName since this is the value we want to store in the settings
-            self.write_node_box.addItem(write_node.fullName(), write_node.fullName())
+            combo_box.addItem(write_node.fullName(), write_node.fullName())
 
     def _rebuild_views_drop_down(self) -> None:
         self.views_box.clear()
@@ -208,12 +266,12 @@ class SceneSettingsWidget(QWidget):
         self.frame_override_txt.setEnabled(settings.override_frame_range)
         self.frame_override_txt.setText(settings.frame_list)
 
-        self._rebuild_write_node_drop_down()
-        index = self.write_node_box.findData(settings.write_node_selection)
-        if index >= 0:
-            self.write_node_box.setCurrentIndex(index)
-        else:
-            self.write_node_box.setCurrentIndex(0)
+        # self._rebuild_write_node_drop_down()
+        # index = self.write_node_box.findData(settings.write_node_selection)
+        # if index >= 0:
+        #     self.write_node_box.setCurrentIndex(index)
+        # else:
+        #     self.write_node_box.setCurrentIndex(0)
 
         self._rebuild_views_drop_down()
         index = self.views_box.findData(settings.view_selection)
@@ -252,7 +310,24 @@ class SceneSettingsWidget(QWidget):
         settings.override_frame_range = self.frame_override_chck.isChecked()
         settings.frame_list = self.frame_override_txt.text()
 
-        settings.write_node_selection = self.write_node_box.currentData()
+        if self.submit_single_step_button.isChecked():
+            settings.write_node_selection = self.write_node_box.currentData()
+        elif self.submit_multiple_steps_button.isChecked():
+            previous_step_name = None
+            for i in range(self.multiple_steps_group_box.count()):
+                child_widget = self.multiple_steps_group_box.itemAt(i)
+
+                step_name = child_widget.itemAt(0).widget().text()
+                write_node = child_widget.itemAt(1).widget().currentData()
+                frame_range = child_widget.itemAt(2).widget().text()
+                step = StepSetting(
+                    step_name=step_name, write_node=write_node, frame_range=frame_range, depends_on=previous_step_name
+                )
+                settings.multiple_steps_selection_list.append(step)
+                previous_step_name = step_name
+        else:
+            # One of them should be chosen
+            nuke.tprint("pick xomething!")
         settings.view_selection = self.views_box.currentData()
         settings.is_proxy_mode = self.proxy_mode_check.isChecked()
 
@@ -273,3 +348,12 @@ class SceneSettingsWidget(QWidget):
         Set the activated/deactivated status of the Frame override text box
         """
         self.frame_override_txt.setEnabled(state == Qt.Checked)
+
+    def control_multiple_steps_button(self, state: int):
+        self.multiple_steps_group_box.setEnabled(False)
+        self.write_node_box.setEnabled(True)
+
+
+    def control_simple_step_button(self, state: int):
+        self.multiple_steps_group_box.setEnabled(True)
+        self.write_node_box.setEnabled(False)

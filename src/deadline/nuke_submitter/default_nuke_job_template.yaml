@@ -90,8 +90,6 @@ steps:
           continue_on_error: {{Param.ContinueOnError}}
           proxy: {{Param.ProxyMode}}
           script_file: '{{Param.NukeScriptFile}}'
-          write_nodes:
-          - '{{Param.WriteNode}}'
           views:
           - '{{Param.View}}'
       actions:

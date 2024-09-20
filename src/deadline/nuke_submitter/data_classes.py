@@ -6,8 +6,20 @@ import dataclasses
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
+from typing import Optional
 
 RENDER_SUBMITTER_SETTINGS_FILE_EXT = ".deadline_render_settings.json"
+
+
+@dataclass
+class StepSetting:
+    step_name: str
+    frame_range: str
+    write_node: str
+    depends_on: Optional[str]
+
+    def to_json(self):
+        return json.dumps(self, default=lambda o: o.__dict__)
 
 
 @dataclass
@@ -37,6 +49,7 @@ class RenderSubmitterUISettings:  # pylint: disable=too-many-instance-attributes
     on_exit_timeout_seconds: int = field(default=3600, metadata={"sticky": True})  # 1 hour
 
     include_gizmos_in_job_bundle: bool = field(default=False, metadata={"sticky": True})
+    multiple_steps_selection_list: list[StepSetting] = field(default_factory=list, metadata={"sticky": True})
 
     # developer options
     include_adaptor_wheels: bool = field(default=False, metadata={"sticky": True})
@@ -81,4 +94,10 @@ class RenderSubmitterUISettings:  # pylint: disable=too-many-instance-attributes
                 for field in dataclasses.fields(self)
                 if field.metadata.get("sticky")
             }
+            for k,v in obj.items():
+                if k == "multiple_steps_selection_list":
+                    step_list = []
+                    for step in v:
+                        step_list.append(step.to_json())
+                    obj[k] = step_list
             json.dump(obj, fh, indent=1)
